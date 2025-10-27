@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Home Automation 4-Relay</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.png">
+  <meta name="theme-color" content="#1E88E5">
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js");
+    }
+  </script>
+
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- MQTT -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <!-- Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+    }
+
+    /* Loader overlay */
+    #loadingOverlay {
+      position: fixed;
+      inset: 0;
+      background-color: #0f172a; /* gray-900 */
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 50;
+      transition: opacity 0.6s ease, visibility 0.6s ease;
+    }
+
+    .fade-out {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .loader {
+      border: 4px solid #1e293b;
+      border-top: 4px solid #3b82f6;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+</head>
+
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen">
+
+  <!-- LOADING OVERLAY -->
+  <div id="loadingOverlay">
+    <div class="loader mb-4"></div>
+    <p class="text-gray-300 text-lg font-medium">Initializing Control Panel...</p>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md text-center hidden" id="mainContent">
+    <h1 class="text-3xl font-bold mb-6">Extension Board Automation Control</h1>
+
+    <!-- STATUS PANEL -->
+    <div id="statusPanel" class="mb-6 bg-gray-700 p-4 rounded-xl text-left space-y-3">
+      <div class="flex items-center gap-2">
+        <svg id="wifiIcon" class="w-6 h-6 text-yellow-400 animate-pulse" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M8.111 16.617A5.97 5.97 0 0112 15c1.495 0 2.866.547 3.889 1.617M5.636 13.636A9 9 0 0112 11c2.31 0 4.418.869 6.364 2.636M3.051 10.051A12.96 12.96 0 0112 7c3.145 0 6.202 1.176 8.949 3.051M12 19h.01" />
+        </svg>
+        <span>WiFi: <span id="wifiStatus" class="text-yellow-400">Connecting...</span></span>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <svg id="timeIcon" class="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>Last Time Sync: <span id="timeSyncStatus" class="text-yellow-400">Pending...</span></span>
+      </div>
+    </div>
+
+    <div id="relayContainer" class="flex flex-col gap-6"></div>
+  </div>
+
+  <script>
+    // ---------- MQTT CONFIG ----------
+    const mqttServer = "wss://e6e7dac5f1a2475382f05acc556ef6d7.s1.eu.hivemq.cloud:8884/mqtt";
+    const mqttUser = "dipudas";
+    const mqttPassword = "Dipu2002";
+    const clientId = "web_relay_controller_" + Math.floor(Math.random() * 1000);
+
+    const NUM_RELAYS = 3;
+    const topicsCommand = [];
+    const topicsStatus = [];
+    const topicGetStates = "home/relay/get_states";
+    const topicSetTimer = "home/relay/set_timer";
+    const topicWifiConnected = "home/relay/wifiConn";
+    const topicTimeSync = "home/relay/TimeSync";
+
+    for (let i = 1; i <= NUM_RELAYS; i++) {
+      topicsCommand.push(`home/relay${i}/command`);
+      topicsStatus.push(`home/relay${i}/status`);
+    }
+
+    const client = mqtt.connect(mqttServer, {
+      clientId,
+      username: mqttUser,
+      password: mqttPassword,
+      reconnectPeriod: 2000,
+      clean: true
+    });
+
+    const relayContainer = document.getElementById('relayContainer');
+    const wifiStatusEl = document.getElementById('wifiStatus');
+    const wifiIcon = document.getElementById('wifiIcon');
+    const timeSyncStatusEl = document.getElementById('timeSyncStatus');
+    const timeIcon = document.getElementById('timeIcon');
+
+    // ---------- UI BUILD ----------
+    for (let i = 1; i <= NUM_RELAYS; i++) {
+      const div = document.createElement('div');
+      div.className = "p-4 bg-gray-700 rounded-xl shadow flex flex-col gap-3";
+
+      div.innerHTML = `
+        <div class="flex items-center justify-between">
+          <span class="text-lg font-medium">Switch ${i}</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="relay${i}" class="sr-only peer">
+            <div class="w-14 h-8 bg-gray-600 rounded-full peer peer-checked:bg-blue-500 transition-colors"></div>
+            <div class="absolute left-1 top-1 w-6 h-6 bg-white rounded-full peer-checked:translate-x-6 transform transition-transform"></div>
+          </label>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 text-sm text-gray-300">
+          <div>
+            <label class="block mb-1">ON Time</label>
+            <div class="flex gap-2">
+              <input type="time" id="onTime${i}" class="w-full p-1 rounded bg-gray-800 border border-gray-600 text-white">
+              <button id="clearOn${i}" class="px-2 py-1 bg-red-500 rounded hover:bg-red-600">Clear</button>
+            </div>
+          </div>
+          <div>
+            <label class="block mb-1">OFF Time</label>
+            <div class="flex gap-2">
+              <input type="time" id="offTime${i}" class="w-full p-1 rounded bg-gray-800 border border-gray-600 text-white">
+              <button id="clearOff${i}" class="px-2 py-1 bg-red-500 rounded hover:bg-red-600">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between mt-2">
+          <span class="text-sm font-medium">Enable Timer</span>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="enableTimer${i}" class="sr-only peer">
+            <div class="w-14 h-8 bg-gray-600 rounded-full peer peer-checked:bg-green-500 transition-colors"></div>
+            <div class="absolute left-1 top-1 w-6 h-6 bg-white rounded-full peer-checked:translate-x-6 transform transition-transform"></div>
+          </label>
+        </div>
+      `;
+      relayContainer.appendChild(div);
+
+      const relaySwitch = document.getElementById(`relay${i}`);
+      const enableBox = document.getElementById(`enableTimer${i}`);
+      const onTimeEl = document.getElementById(`onTime${i}`);
+      const offTimeEl = document.getElementById(`offTime${i}`);
+
+      relaySwitch.addEventListener("change", () => {
+        const state = relaySwitch.checked ? "ON" : "OFF";
+        client.publish(topicsCommand[i - 1], state);
+      });
+
+      enableBox.addEventListener("change", () => {
+        const enabled = enableBox.checked;
+        const json = { relay: i, on: onTimeEl.value || "-1:-1", off: offTimeEl.value || "-1:-1", enabled };
+        client.publish(topicSetTimer, JSON.stringify(json));
+      });
+
+      document.getElementById(`clearOn${i}`).addEventListener("click", () => {
+        onTimeEl.value = "";
+        const json = { relay: i, on: "-1:-1", off: offTimeEl.value || "-1:-1" };
+        client.publish(topicSetTimer, JSON.stringify(json));
+      });
+
+      document.getElementById(`clearOff${i}`).addEventListener("click", () => {
+        offTimeEl.value = "";
+        const json = { relay: i, on: onTimeEl.value || "-1:-1", off: "-1:-1" };
+        client.publish(topicSetTimer, JSON.stringify(json));
+      });
+    }
+
+    // ---------- LOADER + MQTT READY CONTROL ----------
+    let dataLoaded = false;
+
+    function showMainContent() {
+      const overlay = document.getElementById("loadingOverlay");
+      overlay.classList.add("fade-out");
+      document.getElementById("mainContent").classList.remove("hidden");
+    }
+
+    // Wait for both data and 1 sec timeout
+    Promise.all([
+      new Promise((resolve) => setTimeout(resolve, 1000)), // 1 sec delay
+      new Promise((resolve) => {
+        client.on("connect", () => {
+          console.log("Connected to MQTT broker");
+          topicsStatus.forEach((t) => client.subscribe(t));
+          client.subscribe(topicWifiConnected);
+          client.subscribe(topicTimeSync);
+          // ask ESP for all states, wifi, and time immediately
+          client.publish(topicGetStates, "request");
+          resolve();
+        });
+      })
+    ]).then(() => showMainContent());
+
+    // ---------- HANDLE MQTT MESSAGES ----------
+    client.on("message", (topic, message) => {
+      const msg = message.toString();
+      const relayIndex = topicsStatus.indexOf(topic);
+
+      if (relayIndex !== -1) {
+        const i = relayIndex + 1;
+        try {
+          const data = JSON.parse(msg);
+          document.getElementById(`relay${i}`).checked = data.state === "ON";
+          if (data.on && data.off) {
+            document.getElementById(`onTime${i}`).value = data.on;
+            document.getElementById(`offTime${i}`).value = data.off;
+          }
+          document.getElementById(`enableTimer${i}`).checked = !!data.enabled;
+        } catch { console.warn("Invalid JSON:", msg); }
+      } else if (topic === topicWifiConnected) {
+        try {
+          const data = JSON.parse(msg);
+          wifiStatusEl.textContent = `${data.wifi} (${data.ip})`;
+          wifiStatusEl.className = "text-green-400";
+          wifiIcon.classList.remove("animate-pulse");
+          wifiIcon.classList.replace("text-yellow-400", "text-green-400");
+        } catch { wifiStatusEl.textContent = "Connected"; }
+      } else if (topic === topicTimeSync) {
+        try {
+          const data = JSON.parse(msg);
+          timeSyncStatusEl.textContent = `${data.time} ${data.date}`;
+          timeSyncStatusEl.className = "text-green-400";
+          timeIcon.classList.replace("text-yellow-400", "text-green-400");
+        } catch { timeSyncStatusEl.textContent = "Synced"; }
+      }
+    });
+  </script>
+</body>
+</html>
